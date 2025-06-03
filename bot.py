@@ -1,139 +1,171 @@
-import random
 import logging
-from aiogram import Bot, Dispatcher, types, executor
-from aiogram.types import ParseMode
+import random
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, filters
 
-API_TOKEN = "7635553359:AAHKlFZ7h0F6CDuj676jpBhS6v_hLgJseOc"
+TOKEN = "7613073856:AAHSG3ZJh36qcTZGtXQAbjg0qljd7r7tlw4"
 
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
 
-players = []
+players = {}
 game_started = False
-votes = {}
-voted_users = set()
 situation = ""
-revealed = {}
-
-# Дані
-professions = ["Хірург", "Інженер", "Психолог", "Фермер", "Солдат", "Пілот", "Кухар"]
-health = ["Здоровий", "Астма", "Рак 1 стадії", "Сліпий", "Інвалідність", "Глухий"]
-hobbies = ["Йога", "Кулінарія", "Малювання", "Плавання"]
-items = ["Аптечка", "Лопата", "Ніж", "Їжа на 7 днів"]
-facts = ["Знає мови", "Має водійське", "Вижив в катастрофі"]
-situations = ["Зомбі-апокаліпсис", "Ядерна війна", "Виверження супервулкану"]
+revealed_cards = {}
+votes = {}
+roles = [
+    "Хірург", "Інженер", "Вчитель", "Фермер", "Хімік", "Психолог", "Програміст", 
+    "Пожежник", "Пілот", "Будівельник", "Шеф-кухар", "Ветеринар", "Фізик"
+]
+ages = list(range(18, 61))
+health = ["Здорова людина", "Мається хронічна хвороба", "Одужує після травми", "Інвалідність", "ВІЛ-позитивний"]
+hobbies = ["Гра на гітарі", "Виживання в дикій природі", "Малювання", "Бойові мистецтва", "Медитація"]
+items = ["Аптечка", "Ніж", "Фільтр для води", "Радіоприймач", "Намет", "Консерви", "Запальничка", "Карти місцевості"]
+situations = [
+    "Зомбі апокаліпсис, 10 людей можуть вижити в бункері на 5 років.",
+    "Ядерна війна — бункер вміщує лише 10 людей.",
+    "Кліматична катастрофа — врятуватися можуть лише 10 людей у бункері.",
+    "Світова пандемія — в бункер мають потрапити лише найкорисніші."
+]
 
 def generate_card():
     return {
-        "професія": random.choice(professions),
-        "вік": random.randint(18, 65),
-        "здоровʼя": random.choice(health),
-        "хобі": random.choice(hobbies),
-        "предмет": random.choice(items),
-        "факт": random.choice(facts)
+        "Професія": random.choice(roles),
+        "Вік": random.choice(ages),
+        "Здоров'я": random.choice(health),
+        "Хобі": random.choice(hobbies),
+        "Предмет": random.choice(items)
     }
 
-@dp.message_handler(commands=["start"])
-async def start_cmd(message: types.Message):
-    await message.answer("Привіт! Гра 'Бункер'.\n/join — приєднатися\n/startgame — почати гру")
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привіт! Я — бот гри Бункер. Напиши /join щоб увійти в гру.")
 
-@dp.message_handler(commands=["join"])
-async def join_game(message: types.Message):
-    global game_started
+async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global players, game_started
     if game_started:
-        await message.reply("Гру вже розпочато.")
+        await update.message.reply_text("Гра вже почалася.")
         return
-    for p in players:
-        if p["id"] == message.from_user.id:
-            await message.reply("Ти вже в грі.")
-            return
-    card = generate_card()
-    players.append({"id": message.from_user.id, "name": message.from_user.full_name, "card": card})
-    revealed[message.from_user.id] = []
-    await bot.send_message(
-        message.from_user.id,
-        f"🃏 Твоя картка:\n"
-        f"Професія: {card['професія']}\n"
-        f"Вік: {card['вік']}\n"
-        f"Здоровʼя: {card['здоровʼя']}\n"
-        f"Хобі: {card['хобі']}\n"
-        f"Предмет: {card['предмет']}\n"
-        f"Факт: {card['факт']}"
-    )
-    await message.answer(f"{message.from_user.full_name} приєднався до гри!")
 
-@dp.message_handler(commands=["startgame"])
-async def start_game(message: types.Message):
+    user = update.effective_user
+    if user.id not in players:
+        players[user.id] = {
+            "name": user.full_name,
+            "card": generate_card(),
+            "revealed": [],
+            "voted": False
+        }
+        await update.message.reply_text("Тебе додано до гри.")
+        await context.bot.send_message(chat_id=user.id, text=f"Твоя картка:\n" + "\n".join(
+            f"{k}: {v}" for k, v in players[user.id]["card"].items()))
+    else:
+        await update.message.reply_text("Ти вже в грі.")
+
+async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global game_started, situation
-    if game_started or len(players) < 3:
-        await message.answer("Гра вже йде або замало гравців (мін. 3).")
+    if len(players) < 3:
+        await update.message.reply_text("Для початку гри потрібно хоча б 3 гравці.")
         return
+
     game_started = True
     situation = random.choice(situations)
-    await message.answer(f"🆘 Ситуація: {situation}")
-    text = "\n".join([f"{p['name']} — {p['card']['професія']}" for p in players])
-    await message.answer("🧾 Професії гравців:\n" + text)
+    await update.message.reply_text(f"Гру почато! Ситуація:\n\n{situation}\n\nВсі гравці отримали свої картки в особисті повідомлення. Починайте обговорення!")
 
-@dp.message_handler(commands=["status"])
-async def status(message: types.Message):
-    if not game_started:
-        await message.answer("Гра ще не почалась.")
+async def reveal(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not game_started or user.id not in players:
+        await update.message.reply_text("Ти не в грі або гра ще не почалася.")
         return
-    text = "👥 Гравці у грі:\n" + "\n".join([p["name"] for p in players])
-    await message.answer(text)
 
-@dp.message_handler(commands=["reveal"])
-async def reveal(message: types.Message):
-    if not game_started:
-        await message.answer("Гра ще не почалась.")
+    args = context.args
+    if not args:
+        await update.message.reply_text("Напиши, яку картку ти хочеш відкрити (наприклад: /reveal Вік)")
         return
-    player = next((p for p in players if p["id"] == message.from_user.id), None)
-    if not player:
-        await message.answer("Тебе нема в грі.")
-        return
-    available = [k for k in player["card"] if k not in revealed[message.from_user.id] and k != "професія"]
-    if not available:
-        await message.answer("Ти вже відкрив усі частини картки.")
-        return
-    key = random.choice(available)
-    value = player["card"][key]
-    revealed[message.from_user.id].append(key)
-    await message.answer(f"📢 {message.from_user.full_name} відкрив(ла): {key.capitalize()} — {value}")
 
-@dp.message_handler(commands=["vote"])
-async def vote(message: types.Message):
-    if not message.reply_to_message:
-        await message.reply("Відповідай на повідомлення гравця.")
-        return
-    voter = message.from_user.id
-    target = message.reply_to_message.from_user.id
-    if voter == target:
-        await message.reply("Не можна голосувати за себе.")
-        return
-    if voter in voted_users:
-        await message.reply("Ти вже голосував.")
-        return
-    voted_users.add(voter)
-    votes[target] = votes.get(target, 0) + 1
-    await message.reply("Голос зараховано.")
+    key = " ".join(args)
+    card = players[user.id]["card"]
 
-    if len(voted_users) >= len(players):
-        eliminated_id = max(votes, key=votes.get)
-        eliminated_player = next((p for p in players if p["id"] == eliminated_id), None)
-        if eliminated_player:
-            players.remove(eliminated_player)
-            await message.answer(f"❌ {eliminated_player['name']} вигнано з бункера!")
+    if key not in card:
+        await update.message.reply_text("Такої картки немає.")
+        return
 
-        voted_users.clear()
+    if key in players[user.id]["revealed"]:
+        await update.message.reply_text("Ти вже відкрив цю картку.")
+        return
+
+    players[user.id]["revealed"].append(key)
+    text = f"{players[user.id]['name']} відкрив(ла) свою картку: {key} — {card[key]}"
+    for pid in players:
+        await context.bot.send_message(chat_id=pid, text=text)
+
+async def vote(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not game_started or user.id not in players:
+        await update.message.reply_text("Ти не в грі або гра ще не почалася.")
+        return
+
+    args = context.args
+    if not args:
+        await update.message.reply_text("Вкажи ім'я або ID гравця, за якого голосуєш (наприклад: /vote 12345678)")
+        return
+
+    try:
+        target_id = int(args[0])
+    except:
+        await update.message.reply_text("Неправильний формат ID.")
+        return
+
+    if target_id not in players:
+        await update.message.reply_text("Цього гравця немає.")
+        return
+
+    if players[user.id]["voted"]:
+        await update.message.reply_text("Ти вже проголосував(ла).")
+        return
+
+    votes[target_id] = votes.get(target_id, 0) + 1
+    players[user.id]["voted"] = True
+    await update.message.reply_text("Голос зараховано.")
+
+    total_votes = sum(votes.values())
+    if total_votes == len(players):
+        max_votes = max(votes.values())
+        eliminated = [uid for uid, count in votes.items() if count == max_votes]
+        if len(eliminated) == 1:
+            eliminated_id = eliminated[0]
+            name = players[eliminated_id]["name"]
+            del players[eliminated_id]
+            for pid in players:
+                await context.bot.send_message(chat_id=pid, text=f"{name} було вигнано з бункера!")
+        else:
+            for pid in players:
+                await context.bot.send_message(chat_id=pid, text="Нічия! Ніхто не вигнаний.")
+
+        for pid in players:
+            players[pid]["voted"] = False
         votes.clear()
 
         if len(players) == 2:
-            names = [p["name"] for p in players]
-            await message.answer(f"🎉 Переможці: {names[0]} і {names[1]}")
+            names = [p["name"] for p in players.values()]
+            for pid in players:
+                await context.bot.send_message(chat_id=pid, text=f"Гру завершено!\nВижили: {', '.join(names)}")
             players.clear()
             global game_started
             game_started = False
 
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not game_started:
+        await update.message.reply_text("Гра ще не почалася.")
+        return
+    text = f"Гравці у грі ({len(players)}):\n"
+    for p in players.values():
+        text += f"- {p['name']}\n"
+    await update.message.reply_text(text)
+
+app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CommandHandler("join", join))
+app.add_handler(CommandHandler("startgame", startgame))
+app.add_handler(CommandHandler("reveal", reveal))
+app.add_handler(CommandHandler("vote", vote))
+app.add_handler(CommandHandler("status", status))
+
+app.run_polling()
